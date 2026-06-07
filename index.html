@@ -1,0 +1,458 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>授業サポートアプリ</title>
+  
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    // ── Storage helpers (localStorage版) ─────────────────────────
+    const get = async (key) => {
+      try { const r = localStorage.getItem(key); return r ? JSON.parse(r) : null; }
+      catch { return null; }
+    };
+    const set = async (key, val) => {
+      try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+    };
+    const uid = () => Math.random().toString(36).slice(2, 9);
+    const code6 = () => Math.floor(100000 + Math.random() * 900000).toString();
+    const hhmm = (ts) => new Date(ts).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+
+    // ── Design tokens ────────────────────────────────────────────
+    const FONT = "'Klee One', 'YuKyokasho', '游教科書体', serif";
+    const T = {
+      btn: { display:"block", width:"100%", padding:"0.72rem 1rem", background:"#111", color:"#fff",
+        border:"none", fontSize:"1rem", cursor:"pointer", fontFamily:FONT, letterSpacing:"0.04em" },
+      btnOutline: { display:"block", width:"100%", padding:"0.72rem 1rem", background:"#fff",
+        color:"#111", border:"1px solid #111", fontSize:"1rem", cursor:"pointer", fontFamily:FONT },
+      btnSm: { padding:"0.28rem 0.7rem", background:"#111", color:"#fff", border:"none",
+        fontSize:"0.82rem", cursor:"pointer", fontFamily:FONT },
+      btnGhost: { background:"none", border:"none", cursor:"pointer", color:"#777",
+        textDecoration:"underline", fontSize:"0.88rem", fontFamily:FONT, padding:"0.2rem 0" },
+      input: { display:"block", width:"100%", padding:"0.62rem 0.75rem", border:"1px solid #bbb",
+        fontSize:"1rem", fontFamily:FONT, outline:"none", background:"#fff", color:"#111" },
+      textarea: { display:"block", width:"100%", padding:"0.62rem 0.75rem", border:"1px solid #bbb",
+        fontSize:"0.95rem", fontFamily:FONT, outline:"none", background:"#fff", color:"#111",
+        resize:"vertical", minHeight:"82px" },
+      card: { width:"100%", maxWidth:"430px", padding:"2rem 2rem", border:"1px solid #ddd" },
+      label: { display:"block", fontSize:"0.82rem", color:"#666", marginBottom:"0.3rem" },
+      tag: (t) => ({ display:"inline-block", fontSize:"0.7rem", padding:"0.1rem 0.42rem",
+        background: t === "survey" ? "#111" : "#555", color:"#fff", marginRight:"0.45rem" }),
+    };
+
+    // ── Sub-components ────────────────────────────────────────────
+    const Center = ({ children }) => (
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"center", minHeight:"100vh", padding:"1rem" }}>
+        {children}
+      </div>
+    );
+    const Field = ({ label, children, style }) => (
+      <div style={{ marginBottom:"0.9rem", ...style }}>
+        <label style={T.label}>{label}</label>
+        {children}
+      </div>
+    );
+    const Empty = ({ children }) => (
+      <div style={{ textAlign:"center", color:"#aaa", padding:"2.5rem 0", fontSize:"0.88rem" }}>{children}</div>
+    );
+    const ErrMsg = ({ msg }) => msg ? <p style={{ color:"#c00", fontSize:"0.82rem", marginBottom:"0.75rem" }}>{msg}</p> : null;
+
+    // ── Main App ──────────────────────────────────────────────────
+    function App() {
+      const [page, setPage] = useState("home");
+      const [tMode, setTMode] = useState("login");
+      const [tab, setTab] = useState("comments");
+      const [room, setRoom] = useState(null);
+      const [comments, setComments] = useState([]);
+      const [votes, setVotes] = useState({});
+      const [myVotes, setMyVotes] = useState({});
+      const [sid, setSid] = useState("");
+      const [err, setErr] = useState("");
+
+      const [lCode, setLCode] = useState(""); const [lPw, setLPw] = useState("");
+      const [cName, setCName] = useState(""); const [cCode, setCCode] = useState(code6()); const [cPw, setCPw] = useState("");
+      const [jCode, setJCode] = useState("");
+      const [comment, setComment] = useState("");
+      const [qText, setQText] = useState(""); const [qType, setQType] = useState("question"); const [qOpts, setQOpts] = useState(["",""]);
+
+      const roomIdRef = useRef(null);
+      const pollRef = useRef(null);
+
+      useEffect(() => {
+        (async () => {
+          let s = await get("__sid");
+          if (!s) { s = uid(); await set("__sid", s); }
+          setSid(s);
+        })();
+      }, []);
+
+      const poll = useCallback(async () => {
+        const id = roomIdRef.current; if (!id) return;
+        const [r, c, v] = await Promise.all([get(`rm:${id}`), get(`rm:${id}:c`), get(`rm:${id}:v`)]);
+        if (r) setRoom(r);
+        if (c) setComments(c);
+        if (v) setVotes(v);
+      }, []);
+
+      useEffect(() => {
+        if (!room) return;
+        roomIdRef.current = room.id;
+        poll();
+        pollRef.current = setInterval(poll, 3000);
+        return () => { clearInterval(pollRef.current); };
+      }, [room?.id, poll]);
+
+      const enter = (r, c = [], v = {}) => { setRoom(r); setComments(c); setVotes(v); };
+
+      const doLogin = async () => {
+        setErr("");
+        const idx = await get("rooms") || [];
+        for (const id of idx) {
+          const r = await get(`rm:${id}`);
+          if (r?.code === lCode) {
+            if (r.password !== lPw) { setErr("パスワードが違います"); return; }
+            const c = await get(`rm:${id}:c`) || [];
+            const v = await get(`rm:${id}:v`) || {};
+            enter(r, c, v); setPage("teacher"); setTMode("dash"); return;
+          }
+        }
+        setErr("部屋コードが見つかりません");
+      };
+
+      const doCreate = async () => {
+        setErr("");
+        if (!cName.trim() || !cCode.trim() || !cPw.trim()) { setErr("全て入力してください"); return; }
+        const idx = await get("rooms") || [];
+        for (const id of idx) {
+          const r = await get(`rm:${id}`); if (r?.code === cCode) { setErr("そのコードは使用済みです"); return; }
+        }
+        const id = uid();
+        const newRoom = { id, code: cCode, name: cName, password: cPw, questions: [], createdAt: Date.now() };
+        await set(`rm:${id}`, newRoom); await set(`rm:${id}:c`, []); await set(`rm:${id}:v`, {});
+        await set("rooms", [...idx, id]);
+        enter(newRoom); setPage("teacher"); setTMode("dash");
+      };
+
+      const saveRoom = async (updated) => { await set(`rm:${updated.id}`, updated); setRoom(updated); };
+
+      const addQ = async () => {
+        if (!qText.trim()) return;
+        if (qType === "survey" && qOpts.filter(o => o.trim()).length < 2) return;
+        const q = { id: uid(), text: qText, type: qType,
+          options: qType === "survey" ? qOpts.filter(o => o.trim()) : [],
+          published: false, createdAt: Date.now() };
+        await saveRoom({ ...room, questions: [...room.questions, q] });
+        setQText(""); setQOpts(["",""]); setQType("question");
+      };
+
+      const togglePub = async (qId) =>
+        saveRoom({ ...room, questions: room.questions.map(q => q.id === qId ? {...q, published: !q.published} : q) });
+
+      const delQ = async (qId) =>
+        saveRoom({ ...room, questions: room.questions.filter(q => q.id !== qId) });
+
+      const doJoin = async () => {
+        setErr("");
+        const idx = await get("rooms") || [];
+        for (const id of idx) {
+          const r = await get(`rm:${id}`);
+          if (r?.code === jCode) {
+            const c = await get(`rm:${id}:c`) || [];
+            const v = await get(`rm:${id}:v`) || {};
+            const mv = await get(`__mv:${id}`) || {};
+            setMyVotes(mv); enter(r, c, v); setPage("student"); return;
+          }
+        }
+        setErr("部屋コードが見つかりません");
+      };
+
+      const sendComment = async () => {
+        const text = comment.trim(); if (!text) return;
+        const cur = await get(`rm:${room.id}:c`) || [];
+        const updated = [...cur, { id: uid(), text, timestamp: Date.now() }];
+        await set(`rm:${room.id}:c`, updated); setComments(updated); setComment("");
+      };
+
+      const castVote = async (qId, idx) => {
+        const mv = { ...myVotes, [qId]: idx }; setMyVotes(mv);
+        await set(`__mv:${room.id}`, mv);
+        const allV = await get(`rm:${room.id}:v`) || {};
+        allV[qId] = { ...(allV[qId] || {}), [sid]: idx };
+        await set(`rm:${room.id}:v`, allV); setVotes(allV);
+      };
+
+      const voteStats = (qId, options) => {
+        const qv = votes[qId] || {};
+        const counts = options.map(() => 0);
+        Object.values(qv).forEach(i => { if (counts[i] !== undefined) counts[i]++; });
+        return { counts, total: counts.reduce((a, b) => a + b, 0) };
+      };
+
+      const pubQ = room?.questions?.filter(q => q.published) || [];
+      const surveys = room?.questions?.filter(q => q.type === "survey") || [];
+
+      const exit = () => { clearInterval(pollRef.current); roomIdRef.current = null; setRoom(null); setPage("home"); };
+
+      return (
+        <div style={{ minHeight:"100vh", background:"#fff", color:"#111", fontFamily:FONT }}>
+          <style>{`
+            @import url('https://fonts.googleapis.com/css2?family=Klee+One:wght@400;600&display=swap');
+            *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+            html, body { background: #fff; color: #111; }
+            input[type=radio] { width:15px; height:15px; cursor:pointer; accent-color:#111; }
+          `}</style>
+
+          {page === "home" && (
+            <Center>
+              <div style={{ textAlign:"center" }}>
+                <h1 style={{ fontSize:"2.1rem", letterSpacing:"0.12em", marginBottom:"0.4rem" }}>授業サポート</h1>
+                <p style={{ color:"#888", marginBottom:"2.5rem", fontSize:"0.92rem" }}>匿名コメント・アンケートシステム</p>
+                <div style={{ display:"flex", flexDirection:"column", gap:"0.75rem", maxWidth:"240px", margin:"0 auto" }}>
+                  <button style={T.btn} onClick={() => { setPage("teacher"); setTMode("login"); }}>先生としてログイン</button>
+                  <button style={T.btnOutline} onClick={() => setPage("student-join")}>生徒として参加する</button>
+                </div>
+              </div>
+            </Center>
+          )}
+
+          {page === "teacher" && tMode === "login" && (
+            <Center>
+              <div style={T.card}>
+                <h2 style={{ fontSize:"1.25rem", textAlign:"center", marginBottom:"1.6rem" }}>先生ログイン</h2>
+                <Field label="部屋コード"><input style={T.input} value={lCode} onChange={e=>setLCode(e.target.value)} placeholder="例：123456" /></Field>
+                <Field label="パスワード"><input style={T.input} type="password" value={lPw} onChange={e=>setLPw(e.target.value)} placeholder="••••••" /></Field>
+                <ErrMsg msg={err} />
+                <button style={{ ...T.btn, marginBottom:"0.6rem" }} onClick={doLogin}>ログイン</button>
+                <button style={T.btnOutline} onClick={() => { setErr(""); setTMode("create"); }}>新しい部屋を作成する</button>
+                <div style={{ textAlign:"center", marginTop:"1.1rem" }}>
+                  <button style={T.btnGhost} onClick={() => setPage("home")}>← トップへ</button>
+                </div>
+              </div>
+            </Center>
+          )}
+
+          {page === "teacher" && tMode === "create" && (
+            <Center>
+              <div style={T.card}>
+                <h2 style={{ fontSize:"1.25rem", textAlign:"center", marginBottom:"1.6rem" }}>部屋を作成</h2>
+                <Field label="クラス名"><input style={T.input} value={cName} onChange={e=>setCName(e.target.value)} placeholder="例：3年2組 英語" /></Field>
+                <Field label="部屋コード">
+                  <div style={{ display:"flex", gap:"0.5rem" }}>
+                    <input style={{ ...T.input, flex:1 }} value={cCode} onChange={e=>setCCode(e.target.value)} placeholder="6桁" maxLength={8} />
+                    <button style={T.btnSm} onClick={() => setCCode(code6())}>自動</button>
+                  </div>
+                </Field>
+                <Field label="パスワード"><input style={T.input} type="password" value={cPw} onChange={e=>setCPw(e.target.value)} placeholder="••••••" /></Field>
+                <ErrMsg msg={err} />
+                <button style={{ ...T.btn, marginBottom:"0.5rem" }} onClick={doCreate}>作成する</button>
+                <div style={{ textAlign:"center", marginTop:"0.6rem" }}>
+                  <button style={T.btnGhost} onClick={() => { setErr(""); setTMode("login"); }}>← ログインへ</button>
+                </div>
+              </div>
+            </Center>
+          )}
+
+          {page === "teacher" && tMode === "dash" && room && (
+            <div style={{ maxWidth:"860px", margin:"0 auto", padding:"1rem 1.25rem" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", paddingBottom:"0.7rem", borderBottom:"2px solid #111", marginBottom:"1.25rem" }}>
+                <div>
+                  <h1 style={{ fontSize:"1.55rem", lineHeight:1.2 }}>{room.name}</h1>
+                  <span style={{ fontSize:"0.83rem", color:"#666" }}>部屋コード：<strong style={{ fontSize:"1rem", letterSpacing:"0.12em" }}>{room.code}</strong></span>
+                </div>
+                <button style={T.btnGhost} onClick={exit}>ログアウト</button>
+              </div>
+
+              <div style={{ display:"flex", borderBottom:"1px solid #ddd", marginBottom:"1.5rem" }}>
+                {[["comments",`コメント（${comments.length}）`],["manage","質問・アンケート管理"],["results","アンケート結果"]].map(([id,label]) => (
+                  <button key={id} onClick={() => setTab(id)} style={{
+                    padding:"0.55rem 1rem", border:"none", cursor:"pointer", fontFamily:FONT,
+                    background: tab===id?"#111":"transparent", color: tab===id?"#fff":"#555",
+                    borderBottom: tab===id?"2px solid #111":"2px solid transparent",
+                    fontSize:"0.88rem", marginBottom:"-1px"
+                  }}>{label}</button>
+                ))}
+              </div>
+
+              {tab === "comments" && (
+                comments.length === 0 ? <Empty>まだコメントはありません</Empty> :
+                <div style={{ display:"flex", flexDirection:"column", gap:"0.55rem" }}>
+                  {[...comments].reverse().map(c => (
+                    <div key={c.id} style={{ padding:"0.7rem 1rem", border:"1px solid #e8e8e8", background:"#fafafa" }}>
+                      <span style={{ float:"right", fontSize:"0.75rem", color:"#bbb" }}>{hhmm(c.timestamp)}</span>
+                      <p style={{ margin:0, lineHeight:1.65 }}>{c.text}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {tab === "manage" && (
+                <div>
+                  <div style={{ border:"1px solid #e0e0e0", padding:"1.25rem", marginBottom:"1.75rem" }}>
+                    <h3 style={{ fontSize:"0.95rem", marginBottom:"1rem" }}>新しい項目を追加</h3>
+                    <div style={{ display:"flex", gap:"1.5rem", marginBottom:"0.8rem" }}>
+                      {[["question","質問"],["survey","アンケート"]].map(([v,l]) => (
+                        <label key={v} style={{ display:"flex", alignItems:"center", gap:"0.4rem", cursor:"pointer", fontSize:"0.95rem" }}>
+                          <input type="radio" name="qt" checked={qType===v} onChange={() => setQType(v)} />{l}
+                        </label>
+                      ))}
+                    </div>
+                    <textarea style={T.textarea} placeholder={qType==="question"?"質問内容を入力...":"アンケートの問いを入力..."} value={qText} onChange={e=>setQText(e.target.value)} />
+                    {qType === "survey" && (
+                      <div style={{ margin:"0.75rem 0" }}>
+                        <p style={{ fontSize:"0.8rem", color:"#777", marginBottom:"0.45rem" }}>選択肢（2〜6個）</p>
+                        {qOpts.map((opt, i) => (
+                          <div key={i} style={{ display:"flex", gap:"0.45rem", marginBottom:"0.38rem" }}>
+                            <input style={{ ...T.input, flex:1 }} placeholder={`選択肢 ${i+1}`} value={opt}
+                              onChange={e => { const o=[...qOpts]; o[i]=e.target.value; setQOpts(o); }} />
+                            {qOpts.length > 2 && (
+                              <button style={{ ...T.btnGhost, color:"#c00" }} onClick={() => setQOpts(qOpts.filter((_,j)=>j!==i))}>×</button>
+                            )}
+                          </div>
+                        ))}
+                        {qOpts.length < 6 && (
+                          <button style={{ ...T.btnGhost, fontSize:"0.82rem", marginTop:"0.15rem" }}
+                            onClick={() => setQOpts([...qOpts,""])}>＋ 選択肢を追加</button>
+                        )}
+                      </div>
+                    )}
+                    <button style={{ ...T.btn, maxWidth:"150px", marginTop:"0.75rem" }} onClick={addQ}>追加する</button>
+                  </div>
+
+                  <h3 style={{ fontSize:"0.95rem", marginBottom:"0.7rem" }}>一覧</h3>
+                  {room.questions.length === 0 ? <Empty>まだありません</Empty> :
+                    room.questions.map(q => (
+                      <div key={q.id} style={{ border:`1px solid ${q.published?"#111":"#e0e0e0"}`,
+                        padding:"0.8rem 1rem", marginBottom:"0.55rem", background:q.published?"#f5f5f5":"#fff" }}>
+                        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:"0.75rem" }}>
+                          <div style={{ flex:1 }}>
+                            <div style={{ marginBottom:"0.38rem" }}>
+                              <span style={T.tag(q.type)}>{q.type==="survey"?"アンケート":"質問"}</span>
+                              {q.published && <span style={{ fontSize:"0.72rem", color:"#666" }}>● 公開中</span>}
+                            </div>
+                            <p style={{ fontSize:"0.93rem", lineHeight:1.55 }}>{q.text}</p>
+                            {q.type==="survey" && (
+                              <p style={{ fontSize:"0.78rem", color:"#888", marginTop:"0.3rem" }}>
+                                {q.options.map((o,i)=><span key={i} style={{marginRight:"0.7rem"}}>○ {o}</span>)}
+                              </p>
+                            )}
+                          </div>
+                          <div style={{ display:"flex", gap:"0.5rem", flexShrink:0 }}>
+                            <button style={T.btnSm} onClick={() => togglePub(q.id)}>
+                              {q.published?"非公開":"公開"}
+                            </button>
+                            <button style={{ ...T.btnGhost, color:"#c00", fontSize:"0.8rem" }} onClick={() => delQ(q.id)}>削除</button>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  }
+                </div>
+              )}
+
+              {tab === "results" && (
+                surveys.length === 0 ? <Empty>アンケートがありません</Empty> :
+                surveys.map(q => {
+                  const { counts, total } = voteStats(q.id, q.options);
+                  return (
+                    <div key={q.id} style={{ border:"1px solid #e0e0e0", padding:"1.25rem", marginBottom:"1rem" }}>
+                      <h3 style={{ fontSize:"1rem", marginBottom:"0.28rem" }}>{q.text}</h3>
+                      <p style={{ fontSize:"0.78rem", color:"#999", marginBottom:"1rem" }}>回答数：{total}件</p>
+                      {q.options.map((opt, i) => {
+                        const pct = total > 0 ? Math.round(counts[i]/total*100) : 0;
+                        return (
+                          <div key={i} style={{ marginBottom:"0.7rem" }}>
+                            <div style={{ display:"flex", justifyContent:"space-between", fontSize:"0.88rem", marginBottom:"0.28rem" }}>
+                              <span>{opt}</span>
+                              <span style={{ color:"#777" }}>{counts[i]}票 ({pct}%)</span>
+                            </div>
+                            <div style={{ background:"#eee", height:"20px" }}>
+                              <div style={{ background:"#111", height:"100%", width:`${pct}%`, transition:"width 0.5s ease" }} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+
+          {page === "student-join" && (
+            <Center>
+              <div style={T.card}>
+                <h2 style={{ fontSize:"1.25rem", textAlign:"center", marginBottom:"1.6rem" }}>授業に参加する</h2>
+                <Field label="部屋コード">
+                  <input style={T.input} value={jCode} onChange={e=>setJCode(e.target.value)} placeholder="先生から聞いたコードを入力" maxLength={8} />
+                </Field>
+                <ErrMsg msg={err} />
+                <button style={{ ...T.btn, marginBottom:"0.5rem" }} onClick={doJoin}>参加する</button>
+                <div style={{ textAlign:"center", marginTop:"1rem" }}>
+                  <button style={T.btnGhost} onClick={() => setPage("home")}>← トップへ</button>
+                </div>
+              </div>
+            </Center>
+          )}
+
+          {page === "student" && room && (
+            <div style={{ maxWidth:"680px", margin:"0 auto", padding:"1rem 1.25rem" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end",
+                paddingBottom:"0.7rem", borderBottom:"2px solid #111", marginBottom:"1.5rem" }}>
+                <h1 style={{ fontSize:"1.45rem" }}>{room.name}</h1>
+                <button style={T.btnGhost} onClick={exit}>退出</button>
+              </div>
+
+              {pubQ.length === 0
+                ? <div style={{ textAlign:"center", color:"#aaa", padding:"2rem 0 1.5rem", fontSize:"0.88rem" }}>
+                    先生からの質問・アンケートを待っています…
+                  </div>
+                : pubQ.map(q => (
+                  <div key={q.id} style={{ border:"1px solid #e0e0e0", padding:"1rem", marginBottom:"1rem" }}>
+                    <span style={T.tag(q.type)}>{q.type==="survey"?"アンケート":"質問"}</span>
+                    <p style={{ fontWeight:600, lineHeight:1.65, marginTop:"0.45rem",
+                      marginBottom: q.type==="survey"?"0.85rem":0 }}>{q.text}</p>
+                    {q.type === "survey" && (
+                      <div>
+                        {q.options.map((opt, i) => (
+                          <label key={i} style={{ display:"flex", alignItems:"center", gap:"0.55rem",
+                            padding:"0.35rem 0", cursor:"pointer", fontSize:"0.95rem" }}>
+                            <input type="radio" name={`q-${q.id}`} checked={myVotes[q.id]===i} onChange={() => castVote(q.id, i)} />
+                            {opt}
+                          </label>
+                        ))}
+                        {myVotes[q.id] !== undefined &&
+                          <p style={{ fontSize:"0.75rem", color:"#aaa", marginTop:"0.4rem" }}>✓ 回答済み（変更できます）</p>
+                        }
+                      </div>
+                    )}
+                  </div>
+                ))
+              }
+
+              <div style={{ border:"1px solid #e0e0e0", padding:"1rem", marginTop:"0.5rem" }}>
+                <h3 style={{ fontSize:"0.88rem", color:"#777", marginBottom:"0.7rem" }}>匿名コメント</h3>
+                <textarea style={T.textarea} placeholder="先生へのコメントを入力してください…" value={comment} onChange={e=>setComment(e.target.value)} />
+                <button style={{ ...T.btn, marginTop:"0.6rem" }} onClick={sendComment}>送信する</button>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ── 最後にアプリを描画する部分 ──────────────────────────────────
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
