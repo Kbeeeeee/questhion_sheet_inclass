@@ -4,31 +4,59 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>授業サポートアプリ</title>
-  
+
+  <!-- React -->
   <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-  
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Firebase (compat版: グローバル変数 firebase が使える) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
 </head>
 <body>
   <div id="root"></div>
 
+  <!-- Firebase 設定 -->
+  <script>
+    const firebaseConfig = {
+      apiKey:            "AIzaSyBkdsGt4K_RuMZgAU30XYwG-KYYI6vgmbs",
+      authDomain:        "classroomquestion-ad67f.firebaseapp.com",
+      databaseURL:       "https://classroomquestion-ad67f-default-rtdb.asia-southeast1.firebasedatabase.app",  // 例: https://my-app-default-rtdb.firebaseio.com
+      projectId:         "classroomquestion-ad67f",
+      storageBucket:     "classroomquestion-ad67f.firebasestorage.app",
+      messagingSenderId: "13640289440",
+      appId:             "1:13640289440:web:78d52602f1a33206c9cdc5"
+    };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+  </script>
+
+
+
   <script type="text/babel">
-    const { useState, useEffect, useRef, useCallback } = React;
+    const { useState, useEffect, useRef } = React;
 
-    // ── Storage helpers (localStorage版) ─────────────────────────
-    const get = async (key) => {
-      try { const r = localStorage.getItem(key); return r ? JSON.parse(r) : null; }
-      catch { return null; }
-    };
-    const set = async (key, val) => {
-      try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
-    };
-    const uid = () => Math.random().toString(36).slice(2, 9);
+    // ── Firebase ヘルパー ─────────────────────────────────────────
+    // localStorage の代わりに Firebase Realtime Database を使う
+    // → 全デバイスからリアルタイムで同じデータを読み書きできる
+    const dbGet  = (path) => db.ref(path).get().then(s => s.val());
+    const dbSet  = (path, val) => db.ref(path).set(val);
+    const dbPush = (path, val) => db.ref(path).push(val);
+
+    const uid   = () => Math.random().toString(36).slice(2, 9);
     const code6 = () => Math.floor(100000 + Math.random() * 900000).toString();
-    const hhmm = (ts) => new Date(ts).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+    const hhmm  = (ts) => new Date(ts).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
 
-    // ── Design tokens ────────────────────────────────────────────
+    // Firebase は配列をオブジェクトに変換することがある → 正規化
+    const toRoom = (d) => {
+      if (!d) return null;
+      return { ...d, questions: d.questions
+        ? (Array.isArray(d.questions) ? d.questions : Object.values(d.questions))
+        : [] };
+    };
+
+    // ── デザイントークン ──────────────────────────────────────────
     const FONT = "'Klee One', 'YuKyokasho', '游教科書体', serif";
     const T = {
       btn: { display:"block", width:"100%", padding:"0.72rem 1rem", background:"#111", color:"#fff",
@@ -44,20 +72,20 @@
       textarea: { display:"block", width:"100%", padding:"0.62rem 0.75rem", border:"1px solid #bbb",
         fontSize:"0.95rem", fontFamily:FONT, outline:"none", background:"#fff", color:"#111",
         resize:"vertical", minHeight:"82px" },
-      card: { width:"100%", maxWidth:"430px", padding:"2rem 2rem", border:"1px solid #ddd" },
+      card: { width:"100%", maxWidth:"430px", padding:"2rem", border:"1px solid #ddd" },
       label: { display:"block", fontSize:"0.82rem", color:"#666", marginBottom:"0.3rem" },
       tag: (t) => ({ display:"inline-block", fontSize:"0.7rem", padding:"0.1rem 0.42rem",
         background: t === "survey" ? "#111" : "#555", color:"#fff", marginRight:"0.45rem" }),
     };
 
-    // ── Sub-components ────────────────────────────────────────────
+    // ── 小コンポーネント ──────────────────────────────────────────
     const Center = ({ children }) => (
       <div style={{ display:"flex", alignItems:"center", justifyContent:"center", minHeight:"100vh", padding:"1rem" }}>
         {children}
       </div>
     );
-    const Field = ({ label, children, style }) => (
-      <div style={{ marginBottom:"0.9rem", ...style }}>
+    const Field = ({ label, children }) => (
+      <div style={{ marginBottom:"0.9rem" }}>
         <label style={T.label}>{label}</label>
         {children}
       </div>
@@ -65,85 +93,92 @@
     const Empty = ({ children }) => (
       <div style={{ textAlign:"center", color:"#aaa", padding:"2.5rem 0", fontSize:"0.88rem" }}>{children}</div>
     );
-    const ErrMsg = ({ msg }) => msg ? <p style={{ color:"#c00", fontSize:"0.82rem", marginBottom:"0.75rem" }}>{msg}</p> : null;
+    const Err = ({ msg }) => msg
+      ? <p style={{ color:"#c00", fontSize:"0.82rem", marginBottom:"0.75rem" }}>{msg}</p>
+      : null;
 
-    // ── Main App ──────────────────────────────────────────────────
+    // ── メインアプリ ──────────────────────────────────────────────
     function App() {
-      const [page, setPage] = useState("home");
+      const [page,  setPage]  = useState("home");
       const [tMode, setTMode] = useState("login");
-      const [tab, setTab] = useState("comments");
-      const [room, setRoom] = useState(null);
+      const [tab,   setTab]   = useState("comments");
+      const [room,  setRoom]  = useState(null);
       const [comments, setComments] = useState([]);
-      const [votes, setVotes] = useState({});
-      const [myVotes, setMyVotes] = useState({});
-      const [sid, setSid] = useState("");
+      const [votes,    setVotes]    = useState({});
+      const [myVotes,  setMyVotes]  = useState({});
       const [err, setErr] = useState("");
 
+      // セッションID: このデバイスのアンケート回答を特定するためだけに使う
+      // (誰が誰かは分からない匿名ID)
+      const [sid] = useState(() => {
+        let s = localStorage.getItem("_csid");
+        if (!s) { s = uid(); localStorage.setItem("_csid", s); }
+        return s;
+      });
+
+      // フォーム用state
       const [lCode, setLCode] = useState(""); const [lPw, setLPw] = useState("");
       const [cName, setCName] = useState(""); const [cCode, setCCode] = useState(code6()); const [cPw, setCPw] = useState("");
       const [jCode, setJCode] = useState("");
       const [comment, setComment] = useState("");
       const [qText, setQText] = useState(""); const [qType, setQType] = useState("question"); const [qOpts, setQOpts] = useState(["",""]);
 
-      const roomIdRef = useRef(null);
-      const pollRef = useRef(null);
-
+      // ── リアルタイムリスナー ──────────────────────────────────
+      // pollingの代わりにFirebaseのonValueを使う
+      // → Firebaseのデータが変わった瞬間に全デバイスで自動更新される
       useEffect(() => {
-        (async () => {
-          let s = await get("__sid");
-          if (!s) { s = uid(); await set("__sid", s); }
-          setSid(s);
-        })();
-      }, []);
+        if (!room?.id) return;
+        const rId = room.id;
+        const refs = {
+          room:     db.ref(`rooms/${rId}`),
+          comments: db.ref(`comments/${rId}`),
+          votes:    db.ref(`votes/${rId}`),
+        };
+        refs.room.on("value", s => {
+          const d = toRoom(s.val());
+          if (d) setRoom(d);
+        });
+        refs.comments.on("value", s => {
+          const d = s.val() || {};
+          setComments(Object.values(d).sort((a, b) => a.timestamp - b.timestamp));
+        });
+        refs.votes.on("value", s => setVotes(s.val() || {}));
+        // クリーンアップ: 別の部屋に移動したときにリスナーを解除
+        return () => { refs.room.off(); refs.comments.off(); refs.votes.off(); };
+      }, [room?.id]);
 
-      const poll = useCallback(async () => {
-        const id = roomIdRef.current; if (!id) return;
-        const [r, c, v] = await Promise.all([get(`rm:${id}`), get(`rm:${id}:c`), get(`rm:${id}:v`)]);
-        if (r) setRoom(r);
-        if (c) setComments(c);
-        if (v) setVotes(v);
-      }, []);
-
-      useEffect(() => {
-        if (!room) return;
-        roomIdRef.current = room.id;
-        poll();
-        pollRef.current = setInterval(poll, 3000);
-        return () => { clearInterval(pollRef.current); };
-      }, [room?.id, poll]);
-
-      const enter = (r, c = [], v = {}) => { setRoom(r); setComments(c); setVotes(v); };
-
+      // ── 先生: ログイン ────────────────────────────────────────
       const doLogin = async () => {
         setErr("");
-        const idx = await get("rooms") || [];
-        for (const id of idx) {
-          const r = await get(`rm:${id}`);
-          if (r?.code === lCode) {
-            if (r.password !== lPw) { setErr("パスワードが違います"); return; }
-            const c = await get(`rm:${id}:c`) || [];
-            const v = await get(`rm:${id}:v`) || {};
-            enter(r, c, v); setPage("teacher"); setTMode("dash"); return;
-          }
-        }
-        setErr("部屋コードが見つかりません");
+        try {
+          const rId = await dbGet(`roomCodes/${lCode}`);
+          if (!rId) { setErr("部屋コードが見つかりません"); return; }
+          const d = await dbGet(`rooms/${rId}`);
+          if (!d) { setErr("部屋が存在しません"); return; }
+          if (d.password !== lPw) { setErr("パスワードが違います"); return; }
+          setRoom(toRoom(d)); setPage("teacher"); setTMode("dash");
+        } catch (e) { setErr("通信エラーが発生しました"); }
       };
 
+      // ── 先生: 部屋作成 ────────────────────────────────────────
       const doCreate = async () => {
         setErr("");
         if (!cName.trim() || !cCode.trim() || !cPw.trim()) { setErr("全て入力してください"); return; }
-        const idx = await get("rooms") || [];
-        for (const id of idx) {
-          const r = await get(`rm:${id}`); if (r?.code === cCode) { setErr("そのコードは使用済みです"); return; }
-        }
-        const id = uid();
-        const newRoom = { id, code: cCode, name: cName, password: cPw, questions: [], createdAt: Date.now() };
-        await set(`rm:${id}`, newRoom); await set(`rm:${id}:c`, []); await set(`rm:${id}:v`, {});
-        await set("rooms", [...idx, id]);
-        enter(newRoom); setPage("teacher"); setTMode("dash");
+        try {
+          const existing = await dbGet(`roomCodes/${cCode}`);
+          if (existing) { setErr("そのコードは使用済みです"); return; }
+          const rId = uid();
+          const newRoom = { id: rId, code: cCode, name: cName, password: cPw, questions: [], createdAt: Date.now() };
+          await dbSet(`rooms/${rId}`, newRoom);
+          await dbSet(`roomCodes/${cCode}`, rId);
+          setRoom(newRoom); setPage("teacher"); setTMode("dash");
+        } catch (e) { setErr("通信エラーが発生しました"); }
       };
 
-      const saveRoom = async (updated) => { await set(`rm:${updated.id}`, updated); setRoom(updated); };
+      const saveRoom = async (updated) => {
+        await dbSet(`rooms/${updated.id}`, updated);
+        setRoom(updated);
+      };
 
       const addQ = async () => {
         if (!qText.trim()) return;
@@ -151,44 +186,43 @@
         const q = { id: uid(), text: qText, type: qType,
           options: qType === "survey" ? qOpts.filter(o => o.trim()) : [],
           published: false, createdAt: Date.now() };
-        await saveRoom({ ...room, questions: [...room.questions, q] });
+        await saveRoom({ ...room, questions: [...(room.questions || []), q] });
         setQText(""); setQOpts(["",""]); setQType("question");
       };
 
-      const togglePub = async (qId) =>
-        saveRoom({ ...room, questions: room.questions.map(q => q.id === qId ? {...q, published: !q.published} : q) });
+      const togglePub = (qId) =>
+        saveRoom({ ...room, questions: room.questions.map(q => q.id===qId ? {...q, published:!q.published} : q) });
 
-      const delQ = async (qId) =>
+      const delQ = (qId) =>
         saveRoom({ ...room, questions: room.questions.filter(q => q.id !== qId) });
 
+      // ── 生徒: 入室 ────────────────────────────────────────────
       const doJoin = async () => {
         setErr("");
-        const idx = await get("rooms") || [];
-        for (const id of idx) {
-          const r = await get(`rm:${id}`);
-          if (r?.code === jCode) {
-            const c = await get(`rm:${id}:c`) || [];
-            const v = await get(`rm:${id}:v`) || {};
-            const mv = await get(`__mv:${id}`) || {};
-            setMyVotes(mv); enter(r, c, v); setPage("student"); return;
-          }
-        }
-        setErr("部屋コードが見つかりません");
+        try {
+          const rId = await dbGet(`roomCodes/${jCode}`);
+          if (!rId) { setErr("部屋コードが見つかりません"); return; }
+          const d = await dbGet(`rooms/${rId}`);
+          if (!d) { setErr("部屋が存在しません"); return; }
+          // 自分の過去の回答をlocalStorageから復元（匿名のまま）
+          const mv = JSON.parse(localStorage.getItem(`_mv_${rId}`) || "{}");
+          setMyVotes(mv); setRoom(toRoom(d)); setPage("student");
+        } catch (e) { setErr("通信エラーが発生しました"); }
       };
 
+      // ── 生徒: コメント送信 ────────────────────────────────────
       const sendComment = async () => {
         const text = comment.trim(); if (!text) return;
-        const cur = await get(`rm:${room.id}:c`) || [];
-        const updated = [...cur, { id: uid(), text, timestamp: Date.now() }];
-        await set(`rm:${room.id}:c`, updated); setComments(updated); setComment("");
+        await dbPush(`comments/${room.id}`, { id: uid(), text, timestamp: Date.now() });
+        setComment("");
       };
 
+      // ── 生徒: アンケート回答 ──────────────────────────────────
       const castVote = async (qId, idx) => {
         const mv = { ...myVotes, [qId]: idx }; setMyVotes(mv);
-        await set(`__mv:${room.id}`, mv);
-        const allV = await get(`rm:${room.id}:v`) || {};
-        allV[qId] = { ...(allV[qId] || {}), [sid]: idx };
-        await set(`rm:${room.id}:v`, allV); setVotes(allV);
+        localStorage.setItem(`_mv_${room.id}`, JSON.stringify(mv));
+        // votes/{roomId}/{questionId}/{anonymousSid} = 選択肢番号
+        await dbSet(`votes/${room.id}/${qId}/${sid}`, idx);
       };
 
       const voteStats = (qId, options) => {
@@ -198,11 +232,11 @@
         return { counts, total: counts.reduce((a, b) => a + b, 0) };
       };
 
-      const pubQ = room?.questions?.filter(q => q.published) || [];
-      const surveys = room?.questions?.filter(q => q.type === "survey") || [];
+      const pubQ    = (room?.questions || []).filter(q => q.published);
+      const surveys = (room?.questions || []).filter(q => q.type === "survey");
+      const exit    = () => { setRoom(null); setPage("home"); };
 
-      const exit = () => { clearInterval(pollRef.current); roomIdRef.current = null; setRoom(null); setPage("home"); };
-
+      // ── レンダリング ──────────────────────────────────────────
       return (
         <div style={{ minHeight:"100vh", background:"#fff", color:"#111", fontFamily:FONT }}>
           <style>{`
@@ -212,6 +246,7 @@
             input[type=radio] { width:15px; height:15px; cursor:pointer; accent-color:#111; }
           `}</style>
 
+          {/* ── HOME ── */}
           {page === "home" && (
             <Center>
               <div style={{ textAlign:"center" }}>
@@ -225,13 +260,18 @@
             </Center>
           )}
 
+          {/* ── 先生: ログイン ── */}
           {page === "teacher" && tMode === "login" && (
             <Center>
               <div style={T.card}>
                 <h2 style={{ fontSize:"1.25rem", textAlign:"center", marginBottom:"1.6rem" }}>先生ログイン</h2>
-                <Field label="部屋コード"><input style={T.input} value={lCode} onChange={e=>setLCode(e.target.value)} placeholder="例：123456" /></Field>
-                <Field label="パスワード"><input style={T.input} type="password" value={lPw} onChange={e=>setLPw(e.target.value)} placeholder="••••••" /></Field>
-                <ErrMsg msg={err} />
+                <Field label="部屋コード">
+                  <input style={T.input} value={lCode} onChange={e=>setLCode(e.target.value)} placeholder="例：123456" />
+                </Field>
+                <Field label="パスワード">
+                  <input style={T.input} type="password" value={lPw} onChange={e=>setLPw(e.target.value)} placeholder="••••••" />
+                </Field>
+                <Err msg={err} />
                 <button style={{ ...T.btn, marginBottom:"0.6rem" }} onClick={doLogin}>ログイン</button>
                 <button style={T.btnOutline} onClick={() => { setErr(""); setTMode("create"); }}>新しい部屋を作成する</button>
                 <div style={{ textAlign:"center", marginTop:"1.1rem" }}>
@@ -241,19 +281,24 @@
             </Center>
           )}
 
+          {/* ── 先生: 部屋作成 ── */}
           {page === "teacher" && tMode === "create" && (
             <Center>
               <div style={T.card}>
                 <h2 style={{ fontSize:"1.25rem", textAlign:"center", marginBottom:"1.6rem" }}>部屋を作成</h2>
-                <Field label="クラス名"><input style={T.input} value={cName} onChange={e=>setCName(e.target.value)} placeholder="例：3年2組 英語" /></Field>
+                <Field label="クラス名">
+                  <input style={T.input} value={cName} onChange={e=>setCName(e.target.value)} placeholder="例：3年2組 英語" />
+                </Field>
                 <Field label="部屋コード">
                   <div style={{ display:"flex", gap:"0.5rem" }}>
                     <input style={{ ...T.input, flex:1 }} value={cCode} onChange={e=>setCCode(e.target.value)} placeholder="6桁" maxLength={8} />
                     <button style={T.btnSm} onClick={() => setCCode(code6())}>自動</button>
                   </div>
                 </Field>
-                <Field label="パスワード"><input style={T.input} type="password" value={cPw} onChange={e=>setCPw(e.target.value)} placeholder="••••••" /></Field>
-                <ErrMsg msg={err} />
+                <Field label="パスワード">
+                  <input style={T.input} type="password" value={cPw} onChange={e=>setCPw(e.target.value)} placeholder="••••••" />
+                </Field>
+                <Err msg={err} />
                 <button style={{ ...T.btn, marginBottom:"0.5rem" }} onClick={doCreate}>作成する</button>
                 <div style={{ textAlign:"center", marginTop:"0.6rem" }}>
                   <button style={T.btnGhost} onClick={() => { setErr(""); setTMode("login"); }}>← ログインへ</button>
@@ -262,16 +307,21 @@
             </Center>
           )}
 
+          {/* ── 先生: ダッシュボード ── */}
           {page === "teacher" && tMode === "dash" && room && (
             <div style={{ maxWidth:"860px", margin:"0 auto", padding:"1rem 1.25rem" }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", paddingBottom:"0.7rem", borderBottom:"2px solid #111", marginBottom:"1.25rem" }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end",
+                paddingBottom:"0.7rem", borderBottom:"2px solid #111", marginBottom:"1.25rem" }}>
                 <div>
                   <h1 style={{ fontSize:"1.55rem", lineHeight:1.2 }}>{room.name}</h1>
-                  <span style={{ fontSize:"0.83rem", color:"#666" }}>部屋コード：<strong style={{ fontSize:"1rem", letterSpacing:"0.12em" }}>{room.code}</strong></span>
+                  <span style={{ fontSize:"0.83rem", color:"#666" }}>
+                    部屋コード：<strong style={{ fontSize:"1rem", letterSpacing:"0.12em" }}>{room.code}</strong>
+                  </span>
                 </div>
                 <button style={T.btnGhost} onClick={exit}>ログアウト</button>
               </div>
 
+              {/* タブ */}
               <div style={{ display:"flex", borderBottom:"1px solid #ddd", marginBottom:"1.5rem" }}>
                 {[["comments",`コメント（${comments.length}）`],["manage","質問・アンケート管理"],["results","アンケート結果"]].map(([id,label]) => (
                   <button key={id} onClick={() => setTab(id)} style={{
@@ -283,6 +333,7 @@
                 ))}
               </div>
 
+              {/* コメント一覧 */}
               {tab === "comments" && (
                 comments.length === 0 ? <Empty>まだコメントはありません</Empty> :
                 <div style={{ display:"flex", flexDirection:"column", gap:"0.55rem" }}>
@@ -295,6 +346,7 @@
                 </div>
               )}
 
+              {/* 質問・アンケート管理 */}
               {tab === "manage" && (
                 <div>
                   <div style={{ border:"1px solid #e0e0e0", padding:"1.25rem", marginBottom:"1.75rem" }}>
@@ -306,7 +358,9 @@
                         </label>
                       ))}
                     </div>
-                    <textarea style={T.textarea} placeholder={qType==="question"?"質問内容を入力...":"アンケートの問いを入力..."} value={qText} onChange={e=>setQText(e.target.value)} />
+                    <textarea style={T.textarea}
+                      placeholder={qType==="question"?"質問内容を入力...":"アンケートの問いを入力..."}
+                      value={qText} onChange={e=>setQText(e.target.value)} />
                     {qType === "survey" && (
                       <div style={{ margin:"0.75rem 0" }}>
                         <p style={{ fontSize:"0.8rem", color:"#777", marginBottom:"0.45rem" }}>選択肢（2〜6個）</p>
@@ -315,7 +369,8 @@
                             <input style={{ ...T.input, flex:1 }} placeholder={`選択肢 ${i+1}`} value={opt}
                               onChange={e => { const o=[...qOpts]; o[i]=e.target.value; setQOpts(o); }} />
                             {qOpts.length > 2 && (
-                              <button style={{ ...T.btnGhost, color:"#c00" }} onClick={() => setQOpts(qOpts.filter((_,j)=>j!==i))}>×</button>
+                              <button style={{ ...T.btnGhost, color:"#c00" }}
+                                onClick={() => setQOpts(qOpts.filter((_,j)=>j!==i))}>×</button>
                             )}
                           </div>
                         ))}
@@ -359,6 +414,7 @@
                 </div>
               )}
 
+              {/* アンケート結果 */}
               {tab === "results" && (
                 surveys.length === 0 ? <Empty>アンケートがありません</Empty> :
                 surveys.map(q => {
@@ -388,14 +444,16 @@
             </div>
           )}
 
+          {/* ── 生徒: 入室 ── */}
           {page === "student-join" && (
             <Center>
               <div style={T.card}>
                 <h2 style={{ fontSize:"1.25rem", textAlign:"center", marginBottom:"1.6rem" }}>授業に参加する</h2>
                 <Field label="部屋コード">
-                  <input style={T.input} value={jCode} onChange={e=>setJCode(e.target.value)} placeholder="先生から聞いたコードを入力" maxLength={8} />
+                  <input style={T.input} value={jCode} onChange={e=>setJCode(e.target.value)}
+                    placeholder="先生から聞いたコードを入力" maxLength={8} />
                 </Field>
-                <ErrMsg msg={err} />
+                <Err msg={err} />
                 <button style={{ ...T.btn, marginBottom:"0.5rem" }} onClick={doJoin}>参加する</button>
                 <div style={{ textAlign:"center", marginTop:"1rem" }}>
                   <button style={T.btnGhost} onClick={() => setPage("home")}>← トップへ</button>
@@ -404,6 +462,7 @@
             </Center>
           )}
 
+          {/* ── 生徒: 授業画面 ── */}
           {page === "student" && room && (
             <div style={{ maxWidth:"680px", margin:"0 auto", padding:"1rem 1.25rem" }}>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end",
@@ -441,7 +500,8 @@
 
               <div style={{ border:"1px solid #e0e0e0", padding:"1rem", marginTop:"0.5rem" }}>
                 <h3 style={{ fontSize:"0.88rem", color:"#777", marginBottom:"0.7rem" }}>匿名コメント</h3>
-                <textarea style={T.textarea} placeholder="先生へのコメントを入力してください…" value={comment} onChange={e=>setComment(e.target.value)} />
+                <textarea style={T.textarea} placeholder="先生へのコメントを入力してください…"
+                  value={comment} onChange={e=>setComment(e.target.value)} />
                 <button style={{ ...T.btn, marginTop:"0.6rem" }} onClick={sendComment}>送信する</button>
               </div>
             </div>
@@ -450,7 +510,6 @@
       );
     }
 
-    // ── 最後にアプリを描画する部分 ──────────────────────────────────
     const root = ReactDOM.createRoot(document.getElementById("root"));
     root.render(<App />);
   </script>
